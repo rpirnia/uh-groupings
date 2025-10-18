@@ -23,14 +23,14 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Input } from '@/components/ui/input';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
-import { groupingOwners, removeFromGroups } from '@/lib/actions';
+import { getNumberOfDirectOwners, groupingOwners, removeFromGroups } from '@/lib/actions';
 import { MemberResult, MembershipResults } from '@/lib/types';
 import OwnersModal from '@/components/modal/owners-modal';
 import DynamicModal from '@/components/modal/dynamic-modal';
 import PersonTableSkeleton from '@/app/admin/_components/person-table/person-table-skeleton';
 import personTableColumns from '@/app/admin/_components/person-table/table-element/person-table-columns';
-import RemoveMember from '@/app/admin/_components/person-table/table-element/remove-member';
 import { Spinner } from '@/components/ui/spinner';
+import { Label } from '@/components/ui/label';
 
 const pageSize = parseInt(process.env.NEXT_PUBLIC_PAGE_SIZE as string);
 
@@ -39,7 +39,7 @@ const PersonTable = ({
     memberResult,
     uhIdentifier,
     showWarning
-    }: {
+}: {
     membershipResults?: MembershipResults;
     memberResult?: MemberResult;
     uhIdentifier?: undefined | string;
@@ -57,6 +57,8 @@ const PersonTable = ({
     const [modalTitle, setModalTitle] = useState('');
     const [modalBody, setModalBody] = useState(<></>);
     const [modalWarning, setModalWarning] = useState('');
+    const [modalButton, setModalButton] = useState([]);
+    const [modalCloseText, setModalCloseText] = useState(false);
     // Search states
     const router = useRouter();
     const resultCode = membershipResults.resultCode;
@@ -70,7 +72,9 @@ const PersonTable = ({
     const isDisabled = resultCode !== 'SUCCESS' || groupingsInfo.length === 0;
 
     /**
-     * Returns an error message if input to the Search bar is invalid; otherwise, returns an empty string.
+     * Returns an error message if input from the Search bar is invalid; otherwise, returns an empty string.
+     *
+     * @param input - The user input from the Search bar
      */
     const validateInput = (input: string) => {
         if (!input) return 'You must enter a UH member to search';
@@ -81,27 +85,23 @@ const PersonTable = ({
     /**
      * If the Enter/return keys are pressed or the Search button is clicked, starts the transition with the skeleton
      * file, resets the searchCounter, and navigates to /admin/manage-person?uhIdentifier=identifier
-     *
-     * @param e - The interaction or event
      */
-    const handleKeyDown = (e) => {
-        if (e.key === 'Enter' || e.type === 'click') {
-            const identifier = (uid ?? '').trim().toString();
-            const validationError = validateInput(identifier);
+    const handleSearch = () => {
+        const identifier = (uid ?? '').toString().trim();
+        const validationError = validateInput(identifier);
 
-            if (validationError) {
-                setError(validationError);
-                showWarning = false;
-                return;
-            }
-
-            setError('');
-            startTransition(() => {
-                setSearchCounter(0);
-                table.resetRowSelection();
-                router.push(`?uhIdentifier=${identifier}`);
-            });
+        if (validationError) {
+            setError(validationError);
+            showWarning = false;
+            return;
         }
+
+        setError('');
+        startTransition(() => {
+            setSearchCounter(0);
+            table.resetRowSelection();
+            router.push(`?uhIdentifier=${identifier}`);
+        });
     };
 
     /**
@@ -124,23 +124,112 @@ const PersonTable = ({
     };
 
     /**
-     * Gets the list of paths that are checked, sets up the props for the Dynamic modal, and opens the modal.
+     * Gets the list of selected paths, sets up the props for the Dynamic modal, and opens the appropriate modal.
      */
-    const openRemoveModal = () => {
-        const selectedPaths = table
+    const openRemoveModal = async () => {
+        const list = table
             .getSelectedRowModel()
-            .rows.map(({ original }) => original.path)
-            .filter(Boolean);
+            .rows.map(({ original }) => original.path.split(':').pop())
+            .filter((path) => path)
+            .join(', ');
 
-        setModalOpen(true);
-        setModalTitle('Remove Member From Groups');
-        setModalBody(<RemoveMember userInfo={userInfo} selectedPaths={selectedPaths} />
-        );
-        setModalWarning(
-            'Membership changes made may not take effect immediately. Usually, 3-5 minutes should be\n' +
-            'anticipated. In extreme cases changes may take several hours to be fully processed,\n' +
-            'depending on the number of members and the synchronization destination.'
-        );
+        const groupPaths = table.getSelectedRowModel().rows.flatMap(({ original }) => {
+            const { path, inOwner } = original;
+            return [inOwner && `${path}:owners`].filter(
+                (groupPath) => groupPath
+            );
+        });
+
+        startTransition(() => {
+            (async () => {
+                const ownerGroups = groupPaths.filter((path) => path.endsWith(':owners'));
+                const soleOwnerGroups: string[] = [];
+                for (const groupPath of ownerGroups) {
+                    const groupName = groupPath.replace(':owners', '');
+
+                    const result = await getNumberOfDirectOwners(groupName);
+                    if (result === 1 && groupName) {
+                        soleOwnerGroups.push(groupName);
+                    }
+                }
+
+                if (soleOwnerGroups.length > 0) {
+                    setModalOpen(true);
+                    setModalTitle('Error Removing User');
+                    setModalBody(
+                        <>
+                            You are unable to remove this owner. There must be at least one owner remaining.
+                            {'\n\n'}
+                            The user you are trying to remove is the sole direct owner of the following
+                            grouping(s): <span>{soleOwnerGroups.join(', ')}</span>.
+                        </>
+                    );
+                    setModalWarning('');
+                    setModalButton([<span key="closeSoleOwner" data-testid="close-sole-owner">Close</span>]);
+                    setModalCloseText(false);
+                    return;
+                }
+
+                setModalOpen(true);
+                setModalTitle('Remove Member From Groups');
+                setModalBody(
+                    <>
+                        You are about to remove the following member from the <span>{list}</span> list(s).
+                        <span className="grid grid-cols-2 mb-2 mt-2">
+                    <span className="grid">
+                        <span className="grid grid-cols-4 items-center py-1 px-4">
+                            <Label htmlFor="name" className="font-bold text-s text-left whitespace-nowrap">
+                                NAME:
+                            </Label>
+                        </span>
+                        <span className="grid grid-cols-4 items-center py-1 px-4">
+                            <Label htmlFor="name" className="font-bold text-s text-left whitespace-nowrap">
+                                UH USERNAME:
+                            </Label>
+                        </span>
+                        <span className="grid grid-cols-4 items-center py-1 px-4">
+                            <Label htmlFor="name" className="font-bold text-s text-left whitespace-nowrap">
+                                UH USER ID:
+                            </Label>
+                        </span>
+                    </span>
+
+                    <span className="grid">
+                        <span className="grid grid-cols-2 items-center">
+                            <Label htmlFor="name" className="text-s text-left whitegrid grid-cols-2space-nowrap">
+                                {userInfo?.name}
+                            </Label>
+                        </span>
+                        <span className="grid grid-cols-4 items-center">
+                            <Label htmlFor="name" className="text-s text-left whitespace-nowrap">
+                                {userInfo?.uid.toLowerCase()}
+                            </Label>
+                        </span>
+                        <span className="grid grid-cols-4 items-center">
+                            <Label htmlFor="name" className="text-s text-left whitespace-nowrap">
+                                {userInfo?.uhUuid}
+                            </Label>
+                        </span>
+                    </span>
+                </span>
+                        Are you sure you want to remove{' '}
+                        <span className="font-bold text-text-color">
+                            {userInfo?.name}
+                        </span>{' '}
+                        from the <span>{list}</span> list(s)?
+                    </>
+                );
+                setModalWarning(
+                    'Membership changes made may not take effect immediately. Usually, 3-5 minutes should be\n' +
+                    'anticipated. In extreme cases changes may take several hours to be fully processed,\n' +
+                    'depending on the number of members and the synchronization destination.'
+                );
+                setModalButton([<span key="remove" onClick={() => handleRemove()}
+                                      data-testid="yes-button">Yes</span>
+                ]);
+                setModalCloseText(true);
+            })();
+        });
     };
 
     /**
@@ -148,13 +237,15 @@ const PersonTable = ({
      * table's selection, closes the modal, and refreshes the table component.
      */
     const handleRemove = async () => {
-        const groups = table.getSelectedRowModel().rows.flatMap(({ original }) => {
+        const groupPaths = table.getSelectedRowModel().rows.flatMap(({ original }) => {
             const { path, inOwner, inInclude, inExclude } = original;
             return [inOwner && `${path}:owners`, inInclude && `${path}:include`, inExclude && `${path}:exclude`].filter(
                 (groupPath) => groupPath
             );
         });
-        await removeFromGroups(uhIdentifier, groups);
+        if (uhIdentifier) {
+            await removeFromGroups(uhIdentifier, groupPaths);
+        }
         setRowSelection({});
         setModalOpen(false);
         router.refresh();
@@ -182,30 +273,28 @@ const PersonTable = ({
                 title={modalTitle}
                 body={modalBody}
                 warning={modalWarning}
-                buttons={[
-                    <button onClick={() => handleRemove()} key="remove">
-                        Yes
-                    </button>
-                ]}
-                closeText="Cancel"
+                buttons={modalButton}
+                closeText={modalCloseText ? 'Cancel' : undefined}
                 onClose={() => setModalOpen(false)}
             />
             {/* Owners data Modal */}
-            <OwnersModal open={openOwnersModal} onClose={() => setOpenOwnersModal(false)} modalData={ownersModalData} />
-            {/* Layout for medium-sized screens and above */}
-            <div className="flex-col hidden md:block mb-5">
-                <div className="flex flex-row justify-between items-center pt-8 mb-1">
-                    <div className="flex flex-row w-full">
-                        <h1 className="text-[2rem] inline font-medium text-text-color justify-start">Manage Person</h1>
-                        {isPending && <Spinner className="text-text-color ml-1 stroke-[1.5]" size="default"
+            <OwnersModal open={openOwnersModal} onClose={() => setOpenOwnersModal(false)} modalData={ownersModalData}
+                         data-testid={'owners-modal'} />
+            <div className="w-full pt-5 pb-3">
+                <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
+                    {/* Manage Person heading */}
+                    <div className="flex flex-col lg:flex-row lg:items-start md:items-start sm:items-start ">
+                        <h1 className="text-[2rem] font-medium text-text-color">Manage Person</h1>
+                        {isPending && <Spinner className="text-[1.2rem] font-small text-text-color" size="default"
                                                data-testid="spinner" />}
                         {!isPending && userInfo !== undefined && (
-                            <p className="text-[1.2rem] inline font-small text-text-color justify-end px-1 pt-3">
-                                {'(' + userInfo.name + ', ' + userInfo.uid + ', ' + userInfo.uhUuid + ')'}
-                            </p>
+                            <h2 className="text-[1.2rem] lg:mt-2 md:mt-0 sm:mt-0 font-small text-text-color">
+                                {'(' + userInfo.name + ', ' + userInfo.uid.toLowerCase() + ', ' + userInfo.uhUuid + ')'}
+                            </h2>
                         )}
                     </div>
-                    <div className="flex justify-end w-72 mb-1">
+                    {/* Filter bar */}
+                    <div className="w-full lg:w-52 md:w-52 p-0">
                         <GlobalFilter
                             placeholder="Filter Groupings..."
                             filter={globalFilter}
@@ -213,306 +302,200 @@ const PersonTable = ({
                         />
                     </div>
                 </div>
-                <div className="flex flex-col">
-                    <div className="flex flex-row justify-between items-center mb-1">
-                        <label>
-                            <div className="flex flex-row w-72 items-center">
-                                <Input
-                                    type="search"
-                                    className="flex flex-col rounded-[-0.25rem] rounded-l-[0.25rem]"
-                                    defaultValue={uhIdentifier === undefined || uhIdentifier === '' ? '' : uhIdentifier}
-                                    placeholder="UH Username"
-                                    onChange={(e) => setUid(e.target.value)}
-                                    onKeyDown={handleKeyDown}
-                                    onBlur={() => setSearchCounter(searchCounter + 1)}
-                                />
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Button
-                                                className="rounded-[-0.25rem] rounded-r-[0.25rem] pr-3"
-                                                onClick={handleKeyDown}
-                                                onBlur={() => setSearchCounter(searchCounter + 1)}
-                                            >
-                                                Search
-                                            </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent side={'right'}>
-                                            <p>Specify a person to manage their grouping(s)</p>
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                        </label>
-                        <label>
-                            <div>
-                                Check All
-                                <input
-                                    className="mx-2"
-                                    type="checkbox"
-                                    name="checkAll"
-                                    disabled={isDisabled}
-                                    checked={
-                                        isDisabled
-                                            ? false
-                                            : table.getIsAllPageRowsSelected()
-                                    }
-                                    onChange={table.getToggleAllPageRowsSelectedHandler()}
-                                />
-                                <Button
-                                    variant="destructive"
-                                    onClick={userInfo === undefined ? () => void 0 : validRemove}
-                                    onBlur={() => setShowRemoveWarning(false)}
-                                >
-                                    Remove
-                                </Button>
-                            </div>
-                        </label>
-                    </div>
-                    {resultCode !== 'SUCCESS' &&
-                        uhIdentifier !== undefined &&
-                        uhIdentifier !== '' &&
-                        searchCounter < 1 &&
-                        showWarning && (
-                            <div className="flex flex-row justify-between">
-                                <Alert variant="destructive" className="w-fit mt-2">
-                                    <AlertDescription>
-                                        No user data found for {uhIdentifier}. Check the entered UH member and try
-                                        again.
-                                    </AlertDescription>
-                                </Alert>
-                            </div>
-                        )}
-                    {error && (
-                        <div className="flex flex-row justify-between">
-                            <Alert variant="destructive" className="w-fit mt-2">
-                                <AlertDescription>{error}</AlertDescription>
-                            </Alert>
-                        </div>
-                    )}
-                    {showRemoveWarning && (
-                        <div className="w-full">
-                            <Alert variant="destructive" className="w-fit float-right mt-2">
-                                <AlertDescription>No Groupings have been selected.</AlertDescription>
-                            </Alert>
-                        </div>
-                    )}
-                </div>
-            </div>
-            {/* Layout for screens smaller than medium */}
-            <div className="md:hidden">
-                <div className="flex flex-col justify-items-start items-center pt-8 mb-1">
-                    <h1 className="text-[2rem] inline font-medium text-text-color w-full">Manage Person</h1>
-                    {isPending &&
-                        <Spinner className="text-text-color stroke-[1.5]" size="default" data-testid="spinner" />}
-                    {!isPending && userInfo !== undefined && (
-                        <p className="text-[0.1]rem inline font-small text-text-color w-full">
-                            {'(' + userInfo.name + ', ' + userInfo.uid + ', ' + userInfo.uhUuid + ')'}
-                        </p>
-                    )}
-                </div>
-                <div className="flex justify-end items-center">
-                    <GlobalFilter
-                        placeholder="Filter Groupings..."
-                        filter={globalFilter}
-                        setFilter={setGlobalFilter}
-                    />
-                </div>
-                <div className="flex flex-col w-full justify-items-start items-center mb-2">
-                    <div className="w-full bg-white mb-2">
-                        <label>
-                            <div className="flex flex-row items-center">
-                                <Input
-                                    type="search"
-                                    className="flex rounded-[-0.25rem] rounded-l-[0.25rem]"
-                                    defaultValue={uhIdentifier === undefined || uhIdentifier === '' ? '' : uhIdentifier}
-                                    placeholder="UH Username"
-                                    onChange={(e) => setUid(e.target.value)}
-                                    onKeyDown={handleKeyDown}
-                                    onBlur={() => setSearchCounter(searchCounter + 1)}
-                                />
-                                <TooltipProvider>
-                                    <Tooltip>
-                                        <TooltipTrigger asChild>
-                                            <Button
-                                                className="rounded-[-0.25rem] rounded-r-[0.25rem] pr-3"
-                                                onClick={handleKeyDown}
-                                                onBlur={() => setSearchCounter(searchCounter + 1)}
-                                            >
-                                                Search
-                                            </Button>
-                                        </TooltipTrigger>
-                                        <TooltipContent side={'right'}>
-                                            <p>Specify a person to manage their grouping(s)</p>
-                                        </TooltipContent>
-                                    </Tooltip>
-                                </TooltipProvider>
-                            </div>
-                        </label>
-                    </div>
-                    <label>
-                        <div className="flex flex-row w-full justify-between items-center mb-2">
-                            <div className="flex justify-end items-center w-full">
-                                <label>
-                                    <div className="flex justify-end items-center w-48 ">
-                                        Check All
-                                        <input
-                                            className="mx-2"
-                                            type="checkbox"
-                                            name="checkAll"
-                                            disabled={isDisabled}
-                                            checked={
-                                                isDisabled
-                                                    ? false
-                                                    : table.getIsAllPageRowsSelected()
-                                            }
-                                            onChange={table.getToggleAllPageRowsSelectedHandler()}
-                                        />
+                <div className="flex flex-col md:flex-row md:justify-between md:items-center gap-4">
+                    {/* Search bar */}
+                    <div className="mr-auto w-full lg:w-52 md:w-52 p-0">
+                        <form
+                            className="flex items-center w-full"
+                            onSubmit={(input) => {
+                                input.preventDefault();
+                                handleSearch();
+                            }}
+                        >
+                            <Input
+                                id="Search Person"
+                                name="Search Person"
+                                type="search"
+                                className="flex-1 w-full lg:w-52 md:w-52 rounded-[-0.25rem] rounded-l-[0.25rem]"
+                                value={uid}
+                                placeholder="UH Username"
+                                onChange={(e) => setUid(e.target.value)}
+                                onBlur={() => setSearchCounter(searchCounter + 1)}
+                            />
+                            <TooltipProvider>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
                                         <Button
-                                            variant="destructive"
-                                            onClick={userInfo === undefined ? () => void 0 : validRemove}
-                                            onBlur={() => setShowRemoveWarning(false)}
+                                            className="rounded-l-none"
+                                            name="search"
+                                            type="submit"
+                                            onBlur={() => setSearchCounter(searchCounter + 1)}
                                         >
-                                            Remove
+                                            Search
                                         </Button>
-                                    </div>
-                                </label>
-                            </div>
-                        </div>
-                    </label>
-                    <div className="w-full mb-2">
-                        {resultCode !== 'SUCCESS' &&
-                            uhIdentifier !== undefined &&
-                            uhIdentifier !== '' &&
-                            searchCounter < 1 &&
-                            showWarning && (
-                                <Alert variant="destructive" className="max-w-fit">
-                                    <AlertDescription>
-                                        No user data found for {uhIdentifier}. Check the entered UH member and try
-                                        again.
-                                    </AlertDescription>
-                                </Alert>
-                            )}
-                        {error && (
-                            <Alert variant="destructive" className="max-w-fit">
-                                <AlertDescription>{error}</AlertDescription>
-                            </Alert>
-                        )}
+                                    </TooltipTrigger>
+                                    <TooltipContent side={'right'}>
+                                        <p>Specify a person to manage their grouping(s)</p>
+                                    </TooltipContent>
+                                </Tooltip>
+                            </TooltipProvider>
+                        </form>
+                    </div>
+                    {/* Check All and Remove buttons */}
+                    <div>
+                        <label className="my-auto">
+                            Check All
+                            <input
+                                className="mx-2"
+                                type="checkbox"
+                                name="checkAll"
+                                disabled={isDisabled}
+                                checked={isDisabled ? false : table.getIsAllPageRowsSelected()}
+                                onChange={table.getToggleAllPageRowsSelectedHandler()}
+                            />
+                            <Button
+                                variant="destructive"
+                                onClick={() => {
+                                    if (userInfo) validRemove();
+                                }}
+                                onBlur={() => setShowRemoveWarning(false)}
+                            >
+                                Remove
+                            </Button>
+                        </label>
                     </div>
                 </div>
+                {/* Conditions for no user data alert */}
+                {resultCode !== 'SUCCESS' &&
+                    uhIdentifier !== undefined &&
+                    uhIdentifier !== '' &&
+                    searchCounter < 1 &&
+                    showWarning && (
+                        <Alert variant="destructive" className="w-fit">
+                            <AlertDescription>
+                                No user data found for {uhIdentifier}. Check the entered UH member and try again.
+                            </AlertDescription>
+                        </Alert>
+                    )}
+                {/* User input validation error displays if set */}
+                {error && (
+                    <Alert variant="destructive" className="w-fit">
+                        <AlertDescription>{error}</AlertDescription>
+                    </Alert>
+                )}
                 {showRemoveWarning && (
-                    <Alert variant="destructive" className="w-fit float-right mb-5">
+                    <Alert variant="destructive" className="w-fit lg:ml-auto md:ml-auto" data-testid="remove-warning">
                         <AlertDescription>No Groupings have been selected.</AlertDescription>
                     </Alert>
                 )}
             </div>
-            {/* Table layout for all screens */}
             {isPending ? (
                 <PersonTableSkeleton />
             ) : (
-                <Table className="relative overflow-x-auto">
-                    <TableHeader>
-                        {table.getHeaderGroups().map((headerGroup) => (
-                            <TableRow key={headerGroup.id}>
-                                {headerGroup.headers.map((header) => (
-                                    <TableHead
-                                        key={header.id}
-                                        onClick={header.column.getToggleSortingHandler()}
-                                        className={`${header.column.id === 'name' ? 'w-1/4' : 'w-1/12'}`}
-                                        data-testid={header.id}
-                                    >
-                                        <div className="flex items-center">
-                                            {flexRender(header.column.columnDef.header, header.getContext())}
-                                            <SortArrow direction={header.column.getIsSorted()} />
-                                        </div>
-                                    </TableHead>
-                                ))}
-                            </TableRow>
-                        ))}
-                    </TableHeader>
-                    {userInfo !== undefined && (
-                        <TableBody>
-                            {table.getRowModel().rows.map((row) => (
-                                <TableRow key={row.id}>
-                                    {row.getVisibleCells().map((cell) => (
-                                        <TableCell key={cell.id} width={cell.column.columnDef.size}>
-                                            <div className="flex items-center px-2 overflow-hidden whitespace-nowrap">
-                                                <div className={`m-2 ${cell.column.id === 'name' ? 'w-full' : ''}`}>
-                                                    {cell.column.id === 'name' && (
-                                                        <div className="flex flex-row">
-                                                            <TooltipProvider>
-                                                                <Tooltip>
-                                                                    <TooltipTrigger>
-                                                                        <Link
-                                                                            href={`/groupings/${cell.row.original.path}
-                                                                            `}
-                                                                            rel="noopener noreferrer"
-                                                                            target="_blank"
-                                                                        >
-                                                                            <FontAwesomeIcon
-                                                                                className="ml-1"
-                                                                                icon={faUpRightFromSquare}
-                                                                                data-testid={
-                                                                                    'fa-up-right-from-square-icon'
-                                                                                }
-                                                                            />
-                                                                        </Link>
-                                                                    </TooltipTrigger>
-                                                                    <TooltipContent
-                                                                        className="max-w-[190px] max-h-[180px]
-                                                                        text-center whitespace-normal break-words
-                                                                        bg-black text-white"
-                                                                    >
-                                                                        <p>Manage Grouping</p>
-                                                                    </TooltipContent>
-                                                                </Tooltip>
-                                                            </TooltipProvider>
-                                                            <div className="pl-3">
-                                                                {flexRender(
-                                                                    cell.column.columnDef.cell,
-                                                                    cell.getContext()
-                                                                )}
-                                                            </div>
-                                                            <TooltipProvider>
-                                                                <Tooltip>
-                                                                    <TooltipTrigger className="ml-auto mr-3">
-                                                                        <div>
-                                                                            <FontAwesomeIcon
-                                                                                className="ml-1"
-                                                                                icon={faWebAwesome}
-                                                                                data-testid={'owners-icon'}
-                                                                                onClick={() =>
-                                                                                    hydrateOwnersModal(
-                                                                                        cell.row.original.path
-                                                                                    )
-                                                                                }
-                                                                            />
-                                                                        </div>
-                                                                    </TooltipTrigger>
-                                                                    <TooltipContent
-                                                                        className="max-w-[190px] max-h-[180px]
-                                                                        text-center whitespace-normal break-words
-                                                                        bg-black text-white"
-                                                                        side="right"
-                                                                    >
-                                                                        <p>Display the grouping&apos;s owners</p>
-                                                                    </TooltipContent>
-                                                                </Tooltip>
-                                                            </TooltipProvider>
-                                                        </div>
-                                                    )}
-                                                </div>
-                                                {cell.column.id !== 'name' && (
-                                                    <>{flexRender(cell.column.columnDef.cell, cell.getContext())}</>
-                                                )}
+                <div className="relative overflow-x-auto">
+                    <Table>
+                        <TableHeader>
+                            {table.getHeaderGroups().map((headerGroup) => (
+                                <TableRow key={headerGroup.id}>
+                                    {headerGroup.headers.map((header) => (
+                                        <TableHead
+                                            key={`${header.column.id}`}
+                                            onClick={header.column.getToggleSortingHandler()}
+                                            className={`${header.column.id === 'name' ? 'w-1/4' : 'w-1/12'}`}
+                                            data-testid={header.id}
+                                        >
+                                            <div className="flex items-center">
+                                                {flexRender(header.column.columnDef.header, header.getContext())}
+                                                <SortArrow direction={header.column.getIsSorted()} />
                                             </div>
-                                        </TableCell>
+                                        </TableHead>
                                     ))}
                                 </TableRow>
                             ))}
-                        </TableBody>
-                    )}
-                </Table>
+                        </TableHeader>
+                        {userInfo != undefined && (
+                            <TableBody>
+                                {table.getRowModel().rows.map((row) => (
+                                    <TableRow key={row.id}>
+                                        {row.getVisibleCells().map((cell) => (
+                                            <TableCell key={cell.id} width={cell.column.columnDef.size}>
+                                                <div
+                                                    className="flex items-center px-2 overflow-hidden whitespace-nowrap">
+                                                    {/*The Grouping Name cell includes the Manage Grouping tooltip, Grouping Name, and Owners Modal tooltip*/}
+                                                    <div className={`m-2 ${cell.column.id === 'name' ? 'w-full' : ''}`}>
+                                                        {cell.column.id === 'name' && (
+                                                            <div className="flex flex-row">
+                                                                <TooltipProvider>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger>
+                                                                            <Link
+                                                                                href={`/groupings/${cell.row.original.path}
+                                                                            `}
+                                                                                rel="noopener noreferrer"
+                                                                                target="_blank"
+                                                                            >
+                                                                                <FontAwesomeIcon
+                                                                                    className="ml-1"
+                                                                                    icon={faUpRightFromSquare}
+                                                                                    data-testid={
+                                                                                        'fa-up-right-from-square-icon'
+                                                                                    }
+                                                                                />
+                                                                            </Link>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent
+                                                                            className="max-w-[190px] max-h-[180px]
+                                                                        text-center whitespace-normal break-words
+                                                                        bg-black text-white"
+                                                                        >
+                                                                            <p>Manage Grouping</p>
+                                                                        </TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
+                                                                <div className="pl-3">
+                                                                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                                </div>
+                                                                <TooltipProvider>
+                                                                    <Tooltip>
+                                                                        <TooltipTrigger className="ml-auto mr-3">
+                                                                            <div>
+                                                                                <FontAwesomeIcon
+                                                                                    className="ml-1"
+                                                                                    icon={faWebAwesome}
+                                                                                    data-testid={'owners-icon'}
+                                                                                    onClick={() =>
+                                                                                        hydrateOwnersModal(
+                                                                                            cell.row.original.path
+                                                                                        )
+                                                                                    }
+                                                                                />
+                                                                            </div>
+                                                                        </TooltipTrigger>
+                                                                        <TooltipContent
+                                                                            className="max-w-[190px] max-h-[180px]
+                                                                        text-center whitespace-normal break-words
+                                                                        bg-black text-white"
+                                                                            side="right"
+                                                                        >
+                                                                            <p>Display the grouping&apos;s owners</p>
+                                                                        </TooltipContent>
+                                                                    </Tooltip>
+                                                                </TooltipProvider>
+                                                            </div>
+                                                        )}
+                                                    </div>
+                                                    {/*The rest of the cells e.g., Owner?, Basis?, etc. */}
+                                                    {cell.column.id !== 'name' && (
+                                                        <>{flexRender(cell.column.columnDef.cell, cell.getContext())}</>
+                                                    )}
+                                                </div>
+                                            </TableCell>
+                                        ))}
+                                    </TableRow>
+                                ))}
+                            </TableBody>)}
+                    </Table>
+                </div>
             )}
             <div className="pt-3">
                 {userInfo !== undefined && !isPending && <PaginationBar table={table} />}

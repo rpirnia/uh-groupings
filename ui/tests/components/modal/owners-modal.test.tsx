@@ -38,17 +38,19 @@ describe('OwnersModal', () => {
             <OwnersModal open={true} onClose={onClose} modalData={mockOwners} />
         );
 
-        //const ownersIcon = screen.getByTestId('owners-icon');
-        //expect(ownersIcon).toBeInTheDocument();
+        // const modal = await screen.findByRole('alertdialog');
+        // expect(modal).toBeInTheDocument();
 
         expect(screen.getByText('Owners')).toBeInTheDocument();
+
+        expect(screen.getByText('Username')).toBeInTheDocument();
+        expect(screen.getByText('UH Number')).toBeInTheDocument();
+        expect(screen.getByText('Name')).toBeInTheDocument();
+
         expect(screen.getByText('test-user-1')).toBeInTheDocument();
         expect(screen.getByText('test-user-2')).toBeInTheDocument();
 
-        //mock buttons
         const closeButton = await screen.findByRole('button', { name: 'Close' });
         expect(closeButton).toBeInTheDocument();
-
-        //expect(screen.queryByText('Owners Modal')).not.toBeInTheDocument();
     });
 });

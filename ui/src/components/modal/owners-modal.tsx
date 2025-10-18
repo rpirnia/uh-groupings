@@ -27,8 +27,10 @@ const OwnersModal = ({
             <AlertDialogContent>
                 <AlertDialogHeader>
                     <AlertDialogTitle>Owners</AlertDialogTitle>
-                    <AlertDialogDescription className="relative max-h-[13rem] overflow-scroll">
-                        <div className="flex">
+                    <AlertDialogDescription />
+                </AlertDialogHeader>
+                <div className="relative max-h-[13rem] overflow-scroll">
+                        <div className="flex ml-10 mt-0">
                             <div className="pe-5">
                                 <b className="text-s">Username</b>
                                 {modalData.map((member) => (
@@ -54,8 +56,7 @@ const OwnersModal = ({
                                 ))}
                             </div>
                         </div>
-                    </AlertDialogDescription>
-                </AlertDialogHeader>
+                    </div>
                 <AlertDialogFooter>
                     <Button onClick={onClose}>Close</Button>
                 </AlertDialogFooter>
